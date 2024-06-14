@@ -1,6 +1,7 @@
 import psycopg2
 import jwt
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security.api_key import APIKeyHeader
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ key = os.getenv('SECRET')
 alg = os.getenv('ALGORITHM')
 acc_exp_time = int(os.getenv('ACC_EXP'))
 ref_exp_time = int(os.getenv('REF_EXP'))
+valid_api_key = os.getenv('API_KEY')
 
 
 # Connect to postgres database
@@ -34,11 +36,24 @@ class Tokens(BaseModel):
     refreshToken: str
 
 
+# Helpers
+def authorize_req(api_key_header: str = Security(APIKeyHeader(name="Authorization"))):
+    if api_key_header.startswith("Bearer "):
+        api_key = api_key_header[len("Bearer "):]
+        return api_key == valid_api_key
+    raise HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+    )
+
+
 # Routes
 app = FastAPI()
 
-@app.get("/login/{user_id}")
-async def generate_tokens(user_id):
+@app.post("/login")
+async def generate_tokens(user_id: int, authorized: str = Depends(authorize_req)):
+    if not authorized :
+        raise HTTPException(status_code=401, detail="Unauthorized")
     access_token = jwt.encode(
         {
             "id": user_id,
@@ -62,7 +77,10 @@ async def generate_tokens(user_id):
 
 
 @app.post("/validate")
-async def verify_token(tokens: Tokens):
+async def verify_token(tokens: Tokens, authorized: str = Depends(authorize_req)):
+    if not authorized :
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
     try:
         decoded = jwt.decode(tokens.accessToken, key, algorithms=[alg])
     except jwt.exceptions.ExpiredSignatureError as e:
@@ -73,7 +91,9 @@ async def verify_token(tokens: Tokens):
 
 
 @app.post("/refresh")
-async def refresh(tokens: Tokens):
+async def refresh(tokens: Tokens, authorized: str = Depends(authorize_req)):
+    if not authorized :
+        raise HTTPException(status_code=401, detail="Unauthorized")
     try: 
         decoded = jwt.decode(tokens.accessToken, key, algorithms=[alg])
         return tokens
@@ -100,7 +120,9 @@ async def refresh(tokens: Tokens):
 
 
 @app.post("/logout")
-async def revoke(tokens: Tokens):
+async def revoke(tokens: Tokens, authorized: str = Depends(authorize_req)):
+    if not authorized :
+        raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         decoded = jwt.decode(tokens.accessToken, key, algorithms=[alg])
         try:
