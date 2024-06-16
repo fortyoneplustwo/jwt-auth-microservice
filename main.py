@@ -35,6 +35,8 @@ class Tokens(BaseModel):
     accessToken: str
     refreshToken: str
 
+class User(BaseModel):
+    id: int
 
 # Helpers
 def authorize_req(api_key_header: str = Security(APIKeyHeader(name="Authorization"))):
@@ -51,21 +53,21 @@ def authorize_req(api_key_header: str = Security(APIKeyHeader(name="Authorizatio
 app = FastAPI()
 
 @app.post("/login")
-async def generate_tokens(user_id: int, authorized: str = Depends(authorize_req)):
+async def generate_tokens(user: User, authorized: str = Depends(authorize_req)):
     if not authorized :
         raise HTTPException(status_code=401, detail="Unauthorized")
     access_token = jwt.encode(
         {
-            "id": user_id,
-            "exp": datetime.now(tz=timezone.utc) + acc_tok_exp
+            "id": user.id,
+            "exp": (datetime.now(tz=timezone.utc) + acc_tok_exp).timestamp()
         },
         key,
         algorithm=alg
     )
     refresh_token = jwt.encode(
         {
-            "id": user_id,
-            "exp": datetime.now(tz=timezone.utc) + ref_tok_exp
+            "id": user.id,
+            "exp": (datetime.now(tz=timezone.utc) + ref_tok_exp).timestamp()
         },
         key,
         algorithm=alg
@@ -107,14 +109,32 @@ async def refresh(tokens: Tokens, authorized: str = Depends(authorize_req)):
             raise HTTPException(status_code=401, detail="Refresh token revoked")
         try:
             decoded = jwt.decode(tokens.refreshToken, key, algorithms=[alg])
-        except Exception as e:
-            raise HTTPException(status_code=401, detail="Refresh token invalid")
-        finally:
-            newTokens = await generate_tokens(decoded["id"])
+            access_token = jwt.encode(
+                {
+                    "id": decoded["id"],
+                    "exp": (datetime.now(tz=timezone.utc) + acc_tok_exp).timestamp()
+                },
+                key,
+                algorithm=alg
+            )
+            refresh_token = jwt.encode(
+                {
+                    "id": decoded["id"],
+                    "exp": (datetime.now(tz=timezone.utc) + ref_tok_exp).timestamp()
+                },
+                key,
+                algorithm=alg
+            )
             cur.execute("INSERT INTO revoked VALUES (%s, %s, %s)", (tokens.refreshToken,
                                                                     decoded["id"],
                                                                     decoded["exp"]))
-            return newTokens
+            conn.commit()
+            return {
+                "accessToken": access_token,
+                "refreshToken": refresh_token
+            }
+        except Exception as e:
+            raise HTTPException(status_code=401, detail=f"{e}")
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"{e}")
 
@@ -125,13 +145,11 @@ async def revoke(tokens: Tokens, authorized: str = Depends(authorize_req)):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         decoded = jwt.decode(tokens.accessToken, key, algorithms=[alg])
-        try:
-            decoded = jwt.decode(tokens.refreshToken, key, algorithms=[alg])
-            cur.execute("INSERT INTO revoked VALUES (%s, %s, %s)", (tokens.refreshToken,
-                                                                    decoded["id"],
-                                                                    decoded["exp"]))
-        except Exception as e:
-            raise HTTPException(status_code=401, detail="Refresh token invalid")
+        decoded = jwt.decode(tokens.refreshToken, key, algorithms=[alg])
+        cur.execute("INSERT INTO revoked VALUES (%s, %s, %s)", (tokens.refreshToken,
+                                                                decoded["id"],
+                                                                decoded["exp"]))
+        conn.commit()
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"{e}")
 
